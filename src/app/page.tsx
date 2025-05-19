@@ -1,103 +1,210 @@
-import Image from "next/image";
+'use client';
+
+import { useState, useCallback, useRef } from 'react';
+import { useDropzone } from 'react-dropzone';
+import Scene3D from '@/components/Scene3D';
+import JSZip from 'jszip';
+import { GLTFLoader } from 'three-stdlib';
+import * as THREE from 'three';
+import { useThree } from '@react-three/fiber';
+
+const SAMPLE_SKYBOX = 'https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/textures/2294472375_24a3b8ef46_o.jpg';
 
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm/6 text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-[family-name:var(--font-geist-mono)] font-semibold">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [fileUrl, setFileUrl] = useState<string | null>(SAMPLE_SKYBOX);
+  const [fileType, setFileType] = useState<'image' | 'model' | 'video' | null>('image');
+  const [backgroundType, setBackgroundType] = useState<'none' | 'color' | 'gradient' | 'room'>('room');
+  const [backgroundColor, setBackgroundColor] = useState('#000000');
+  const [gradientColors, setGradientColors] = useState({
+    top: '#000000',
+    bottom: '#ffffff'
+  });
+  const [showFloor, setShowFloor] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [gltfScene, setGltfScene] = useState<THREE.Group | null>(null);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
+  // Helper: Load GLTF/GLB from ZIP with full PBR/texture support
+  async function loadGLTFFromZipWithPBR(zipFile: File) {
+    const zip = await JSZip.loadAsync(zipFile);
+    // Find .gltf or .glb file
+    let gltfEntry = Object.values(zip.files).find(f => f.name.endsWith('.gltf') || f.name.endsWith('.glb'));
+    if (!gltfEntry) return alert('No .gltf or .glb file found in ZIP');
+
+    // Prepare file map for URLModifier
+    const fileMap: Record<string, Blob> = {};
+    for (const file of Object.values(zip.files)) {
+      if (!file.dir) {
+        fileMap[file.name] = await file.async('blob');
+      }
+    }
+
+    // Create a custom loading manager
+    const manager = new THREE.LoadingManager();
+    manager.setURLModifier((url) => {
+      // Remove any leading './' or '/'
+      const cleanUrl = url.replace(/^\.\//, '').replace(/^\//, '');
+      if (fileMap[cleanUrl]) {
+        return URL.createObjectURL(fileMap[cleanUrl]);
+      }
+      return url;
+    });
+
+    // Use GLTFLoader with the custom manager
+    const loader = new GLTFLoader(manager);
+    // Optionally: add DRACOLoader support here if needed
+
+    let gltf;
+    if (gltfEntry.name.endsWith('.glb')) {
+      const blob = fileMap[gltfEntry.name];
+      gltf = await loader.parseAsync(await blob.arrayBuffer(), '');
+    } else {
+      const text = await gltfEntry.async('text');
+      gltf = await loader.parseAsync(text, '');
+    }
+    if (gltf.scene) {
+      (gltf.scene as unknown as THREE.Scene).background = null;
+      (gltf.scene as unknown as THREE.Scene).environment = null;
+    }
+    setGltfScene(gltf.scene || gltf.scenes?.[0] || null);
+    setFileUrl(null); // Hide any previous model
+    setFileType(null);
+  }
+
+  const handleFileSelect = async (file: File) => {
+    if (file.name.endsWith('.zip')) {
+      await loadGLTFFromZipWithPBR(file);
+      return;
+    }
+    setGltfScene(null);
+    const url = URL.createObjectURL(file);
+    setFileUrl(url);
+    
+    // Check file extension for more specific type detection
+    const extension = file.name.toLowerCase().split('.').pop();
+    
+    if (file.type.startsWith('image/') || 
+        ['.jpg', '.jpeg', '.png', '.hdr', '.exr', '.tif', '.tiff', '.bmp', '.webp'].includes(`.${extension}`)) {
+      setFileType('image');
+    } else if (file.type === 'model/gltf-binary' || 
+              file.type === 'model/gltf+json' || 
+              ['.glb', '.gltf', '.obj', '.fbx', '.stl', '.dae', '.3ds'].includes(`.${extension}`)) {
+      setFileType('model');
+    } else if (file.type.startsWith('video/') || 
+              ['.mp4', '.webm', '.mov', '.avi', '.mkv', '.insv'].includes(`.${extension}`)) {
+      setFileType('video');
+    }
+  };
+
+  const onDrop = useCallback(async (acceptedFiles: File[]) => {
+    if (acceptedFiles.length > 0) {
+      await handleFileSelect(acceptedFiles[0]);
+    }
+  }, []);
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    accept: {
+      'image/*': ['.jpg', '.jpeg', '.png', '.hdr', '.exr', '.tif', '.tiff', '.bmp', '.webp'],
+      'model/gltf-binary': ['.glb'],
+      'model/gltf+json': ['.gltf'],
+      'model/obj': ['.obj'],
+      'model/fbx': ['.fbx'],
+      'model/stl': ['.stl'],
+      'model/collada': ['.dae'],
+      'model/3ds': ['.3ds'],
+      'video/*': ['.mp4', '.webm', '.mov', '.avi', '.mkv', '.insv'],
+    },
+    multiple: false,
+    noClick: true,
+  });
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      handleFileSelect(e.target.files[0]);
+    }
+  };
+
+  return (
+    <div {...getRootProps()} className="fixed inset-0">
+      <input 
+        type="file"
+        ref={fileInputRef}
+        onChange={handleFileInputChange}
+        accept=".jpg,.jpeg,.png,.hdr,.exr,.tif,.tiff,.bmp,.webp,.glb,.gltf,.obj,.fbx,.stl,.dae,.3ds,.mp4,.webm,.mov,.avi,.mkv,.insv"
+        className="hidden"
+      />
+      
+      <div className="absolute top-4 right-4 z-10 flex gap-4 items-center">
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          className="bg-black/50 text-white px-3 py-2 rounded-lg backdrop-blur-sm hover:bg-black/60 transition-colors"
         >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
+          Select File
+        </button>
+
+        <select
+          value={backgroundType}
+          onChange={(e) => setBackgroundType(e.target.value as any)}
+          className="bg-black/50 text-white px-3 py-2 rounded-lg backdrop-blur-sm"
         >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
+          <option value="none">No Background</option>
+          <option value="color">Solid Color</option>
+          <option value="gradient">Gradient</option>
+          <option value="room">Room</option>
+        </select>
+
+        {backgroundType === 'color' && (
+          <input
+            type="color"
+            value={backgroundColor}
+            onChange={(e) => setBackgroundColor(e.target.value)}
+            className="w-10 h-10 rounded-lg cursor-pointer"
           />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
+        )}
+
+        {backgroundType === 'gradient' && (
+          <div className="flex gap-2">
+            <div className="flex flex-col items-center">
+              <span className="text-white text-xs mb-1">Top</span>
+              <input
+                type="color"
+                value={gradientColors.top}
+                onChange={(e) => setGradientColors(prev => ({ ...prev, top: e.target.value }))}
+                className="w-10 h-10 rounded-lg cursor-pointer"
+              />
+            </div>
+            <div className="flex flex-col items-center">
+              <span className="text-white text-xs mb-1">Bottom</span>
+              <input
+                type="color"
+                value={gradientColors.bottom}
+                onChange={(e) => setGradientColors(prev => ({ ...prev, bottom: e.target.value }))}
+                className="w-10 h-10 rounded-lg cursor-pointer"
+              />
+            </div>
+          </div>
+        )}
+
+        <label className="flex items-center gap-2 bg-black/50 text-white px-3 py-2 rounded-lg backdrop-blur-sm cursor-pointer">
+          <input
+            type="checkbox"
+            checked={showFloor}
+            onChange={(e) => setShowFloor(e.target.checked)}
+            className="w-4 h-4 rounded"
           />
-          Go to nextjs.org →
-        </a>
-      </footer>
+          Floor
+        </label>
+      </div>
+
+      <Scene3D
+        fileUrl={fileUrl}
+        fileType={fileType}
+        backgroundType={backgroundType}
+        backgroundColor={backgroundColor}
+        gradientColors={gradientColors}
+        showFloor={showFloor}
+        gltfScene={gltfScene}
+      />
     </div>
   );
 }
